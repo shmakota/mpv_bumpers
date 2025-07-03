@@ -1,121 +1,127 @@
+-- MPV bumper‑inserter, playlist‑rebuild approach
+
+local mp      = require("mp")
 local options = require("mp.options")
 
+-- Default options
 local opts = {
-    bumper_list = "",  -- default empty
-    base_url = "https://archive.org/download/AdultswimBumps/",  -- default URL
+    bumper_list = "",  -- CSV: "b1.mp4,b2.mp4,b3.mp4"
+    base_url    = "https://archive.org/download/AdultswimBumps/",
 }
 
-options.read_options(opts, "bumpers")  -- reads script-opts/bumpers.conf
+-- Read script‑opts/bumpers.conf
+options.read_options(opts, "bumpers")
 
--- Parse bumper_list string into a table
+-- Trim whitespace; ensure base_url ends in '/'
+opts.bumper_list = (opts.bumper_list or ""):match("^%s*(.-)%s*$")
+opts.base_url    = (opts.base_url    or ""):match("^%s*(.-)%s*$")
+if not opts.base_url:match("/$") then
+    opts.base_url = opts.base_url .. "/"
+end
+
+-- Parse bumpers into a table of filenames
 local insert_paths = {}
-for bumper in opts.bumper_list:gmatch("([^,]+)") do
-    bumper = bumper:match("^%s*(.-)%s*$")  -- trim whitespace
-    table.insert(insert_paths, bumper)
+for name in opts.bumper_list:gmatch("([^,]+)") do
+    name = name:match("^%s*(.-)%s*$")
+    if name ~= "" then table.insert(insert_paths, name) end
 end
 
-local busy = false
-local bumpers_enabled = true  -- bumper toggle flag
-
--- Show OSD message for 2 seconds
-local function show_osd(msg)
-    mp.osd_message(msg, 2)
-end
-
--- Check if the given path matches one of the bumper videos
+-- Helper: is this path one of our bumpers?
 local function is_bumper(path)
     if not path then return false end
-    for _, bumper in ipairs(insert_paths) do
-        if path == bumper then
+    for _, name in ipairs(insert_paths) do
+        if path:sub(-#name) == name then
             return true
         end
     end
     return false
 end
 
--- Select a random bumper video from the list
+-- Helper: is this a “real” video that should get a bumper after it?
+local function is_valid_video_file(path)
+    if not path or path == "" then return false end
+    if is_bumper(path) then return false end
+    local ext = path:match("%.([^.]+)$")
+    if not ext then return false end
+    ext = ext:lower()
+    local good = {
+      mp4=true, mkv=true, avi=true, mov=true, webm=true,
+      m4v=true, flv=true, wmv=true, mpg=true, mpeg=true,
+    }
+    return good[ext] == true
+end
+
+-- Pick a random bumper (seed once)
+math.randomseed(os.time())
 local function pick_random_bumper()
     if #insert_paths == 0 then return nil end
-    math.randomseed(os.time() + os.clock() * 1000)
     return insert_paths[math.random(#insert_paths)]
 end
 
--- Insert a bumper video immediately after the current one in the playlist
-local function insert_bumper()
-    if not bumpers_enabled then return end  -- don't insert if paused
-    if busy then return end
-    busy = true
-
-    local current_path = mp.get_property("path")
-    local current_pos = mp.get_property_number("playlist-pos", 0)
-
-    if is_bumper(current_path) then
-        busy = false
-        return
-    end
-
-    local playlist = mp.get_property_native("playlist")
-    local next_entry = playlist[current_pos + 2]
-    if next_entry and is_bumper(next_entry.filename) then
-        busy = false
-        return
-    end
-
-    local bumper = pick_random_bumper()
-    if not bumper then
-        busy = false
-        return
-    end
-
-    local bumper_url = opts.base_url .. bumper
-    mp.commandv("loadfile", bumper_url, "append")
-
-    mp.observe_property("playlist-count", "number", function()
-        mp.unobserve_property("playlist-count")
-
-        local playlist_count = #mp.get_property_native("playlist")
-        local bumper_pos = playlist_count - 1
-        local insert_pos = current_pos + 1
-
-        if bumper_pos ~= insert_pos then
-            mp.commandv("playlist-move", bumper_pos, insert_pos)
-        end
-
-        busy = false
-    end)
+-- OSD helper
+local function show_osd(msg)
+    mp.osd_message(msg, 2)
 end
 
--- Handle the end of file event to skip over bumper videos automatically
-local function on_end_file(event)
-    if event.reason ~= 0 then return end  -- Only act on normal end-of-file (not errors or manual stops)
+-- State
+local bumpers_inserted = false
+local bumpers_enabled  = true
 
+-- Rebuild playlist exactly once, interleaving bumpers
+local function rebuild_playlist()
+    if bumpers_inserted then return end
+    bumpers_inserted = true
+
+    local orig = mp.get_property_native("playlist")
+    if not orig or #orig == 0 then return end
+
+    -- Build new playlist array
+    local newlist = {}
+    for _, entry in ipairs(orig) do
+        table.insert(newlist, entry.filename)
+        if is_valid_video_file(entry.filename) then
+            local b = pick_random_bumper()
+            if b then
+                table.insert(newlist, opts.base_url .. b)
+            end
+        end
+    end
+
+    -- Stop playback, clear, and re‑append everything
+    mp.command("stop")
+    mp.command("playlist-clear")
+    for _, url in ipairs(newlist) do
+        mp.commandv("loadfile", url, "append")
+    end
+
+    -- Start playing at the very first item
+    mp.command("playlist-play-index 0")
+end
+
+-- Skip bumpers automatically at end of file
+local function on_end_file(event)
+    if event.reason ~= "eof" and event.reason ~= 0 then return end
     local path = mp.get_property("path")
     if is_bumper(path) then
         mp.command("playlist-next")
-
-        local playlist = mp.get_property_native("playlist")
-        local pos = mp.get_property_number("playlist-pos", 0)
-        local next_entry = playlist[pos + 2]
-
-        if next_entry and is_bumper(next_entry.filename) then
-            mp.command("playlist-next")
-        end
     end
 end
 
--- Toggle bumpers on/off and show OSD message
+-- Toggle bumpers on/off
 local function toggle_bumpers()
     bumpers_enabled = not bumpers_enabled
-    if bumpers_enabled then
-        show_osd("Bumpers resumed")
-    else
-        show_osd("Bumpers paused")
-    end
+    show_osd(bumpers_enabled and "Bumpers paused" or "Bumpers resumed")
 end
 
--- Register events
-mp.register_event("file-loaded", insert_bumper)
-mp.register_event("end-file", on_end_file)
+-- Hook: once we’ve loaded the very first file, rebuild the playlist
+mp.register_event("start-file", function()
+    -- give MPV a few ticks to populate `playlist`
+    mp.add_timeout(0.05, rebuild_playlist)
+end)
 
--- Bind B key to toggle bumpers
+-- Hook: skip bumpers if enabled
+mp.register_event("end-file", function(event)
+    if bumpers_enabled then on_end_file(event) end
+end)
+
 mp.add_key_binding("b", "toggle_bumpers", toggle_bumpers)
