@@ -1,4 +1,18 @@
-local insert_paths = require("bumpers")
+local options = require("mp.options")
+
+local opts = {
+    bumper_list = "",  -- default empty
+    base_url = "https://archive.org/download/AdultswimBumps/",  -- default URL
+}
+
+options.read_options(opts, "bumpers")  -- reads script-opts/bumpers.conf
+
+-- Parse bumper_list string into a table
+local insert_paths = {}
+for bumper in opts.bumper_list:gmatch("([^,]+)") do
+    bumper = bumper:match("^%s*(.-)%s*$")  -- trim whitespace
+    table.insert(insert_paths, bumper)
+end
 
 local busy = false
 local bumpers_enabled = true  -- bumper toggle flag
@@ -25,8 +39,6 @@ local function pick_random_bumper()
     math.randomseed(os.time() + os.clock() * 1000)
     return insert_paths[math.random(#insert_paths)]
 end
-
-local BASE_URL = "https://archive.org/download/AdultswimBumps/"
 
 -- Insert a bumper video immediately after the current one in the playlist
 local function insert_bumper()
@@ -55,7 +67,7 @@ local function insert_bumper()
         return
     end
 
-    local bumper_url = BASE_URL .. bumper
+    local bumper_url = opts.base_url .. bumper
     mp.commandv("loadfile", bumper_url, "append")
 
     mp.observe_property("playlist-count", "number", function()
