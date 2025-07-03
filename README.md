@@ -3,8 +3,9 @@
 This is a Lua script for [mpv](https://mpv.io/) that automatically inserts randomized **Adult Swim-style bumpers** between videos in your playlist, sourced from a custom list or [archive.org](https://archive.org/details/AdultswimBumps) by default.
 
 It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly.
+![image](https://github.com/user-attachments/assets/1518b52a-a6a1-44d3-bd02-60fe960100b4)
+![image](https://github.com/user-attachments/assets/bc74d90b-3e1a-4166-bc22-4aaf3fc79050)
 
-![image](https://github.com/user-attachments/assets/b673708a-3a93-44b6-a35c-62adcd95592b)
 
 ---
 
@@ -34,12 +35,12 @@ It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly.
 ### Example `bumpers.conf`:
 
 ```ini
-bumper_list = bump1.mp4,bump2.mkv,bump3.webm
-base_url = https://archive.org/download/AdultswimBumps/
+base_url=https://archive.org/download/AdultswimBumps/
+bumper_list=bump1.mp4,bump2.mkv,bump3.webm
 ```
 
-- `bumper_list` is a comma-separated list of bumper filenames
 - `base_url` is prepended to each filename (can be a local path or remote URL)
+- `bumper_list` is a comma-separated list of bumper filenames
 
 ---
 
