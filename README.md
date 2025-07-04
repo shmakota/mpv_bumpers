@@ -2,7 +2,7 @@
 
 This is a Lua script for [mpv](https://mpv.io/) that automatically inserts randomized **Adult Swim-style bumpers** between videos in your playlist, sourced from a custom list or [archive.org](https://archive.org/details/AdultswimBumps) by default.
 
-It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly.
+It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly, and a few more useful keybinds.
 ![image](https://github.com/user-attachments/assets/1518b52a-a6a1-44d3-bd02-60fe960100b4)
 ![image](https://github.com/user-attachments/assets/bc74d90b-3e1a-4166-bc22-4aaf3fc79050)
 
@@ -48,6 +48,8 @@ bumper_list=bump1.mp4,bump2.mkv,bump3.webm
 
 - Just play a playlist in mpv and let the script do its thing.
 - Press **`b`** to toggle bumper insertion on/off. An OSD message will confirm the state.
+- Press **`Shift+B`** to swap between installed bumper files. (Requires restart)
+- Press **`Ctrl+B`** to fully disable or enable bumpers. (Requires restart)
 
 ---
 
