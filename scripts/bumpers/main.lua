@@ -12,13 +12,6 @@ local opts = {
 -- Read script‑opts/bumpers.conf
 options.read_options(opts, "bumpers")
 
--- Trim whitespace; ensure base_url ends in '/'
-opts.bumper_list = (opts.bumper_list or ""):match("^%s*(.-)%s*$")
-opts.base_url    = (opts.base_url    or ""):match("^%s*(.-)%s*$")
-if not opts.base_url:match("/$") then
-    opts.base_url = opts.base_url .. "/"
-end
-
 -- Parse bumpers into a table of filenames
 local insert_paths = {}
 for name in opts.bumper_list:gmatch("([^,]+)") do
