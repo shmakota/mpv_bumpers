@@ -1,27 +1,46 @@
--- MPV bumper‑inserter, playlist‑rebuild approach
+--[[ 
+MPV Bumper Inserter (Playlist Rebuild Approach)
+
+Automatically interleaves "bumper" videos between valid videos in your playlist.
+Supports:
+    - Random bumper selection
+    - Skip bumper automatically at EOF
+    - Persistent bumper enable/disable
+    - Config file cycling
+    - Chapter hooks
+--]]
 
 local mp      = require("mp")
 local options = require("mp.options")
+local utils   = require("mp.utils")
 
--- Default options
+----------------------------------------
+-- 1. DEFAULT CONFIGURATION & OPTIONS
+----------------------------------------
 local opts = {
-    bumper_list = "",  -- CSV: "b1.mp4,b2.mp4,b3.mp4"
+    bumper_list = "",  -- CSV of bumper filenames, e.g. "b1.mp4,b2.mp4"
     base_url    = "https://archive.org/download/AdultswimBumps/",
 }
 
--- Read script‑opts/bumpers.conf
+-- Load options from 'bumpers.conf'
 options.read_options(opts, "bumpers")
 
--- Parse bumpers into a table of filenames
+-- Parse bumper CSV into a Lua table
 local insert_paths = {}
 for name in opts.bumper_list:gmatch("([^,]+)") do
     if name then
         name = name:match("^%s*(.-)%s*$") or ""
-        if name ~= "" then table.insert(insert_paths, name) end
+        if name ~= "" then
+            table.insert(insert_paths, name)
+        end
     end
 end
 
--- Helper: is this path one of our bumpers?
+----------------------------------------
+-- 2. HELPER FUNCTIONS
+----------------------------------------
+
+-- Check if a given path corresponds to a bumper
 local function is_bumper(path)
     if not path then return false end
     for _, name in ipairs(insert_paths) do
@@ -32,37 +51,46 @@ local function is_bumper(path)
     return false
 end
 
--- Helper: is this a “real” video that should get a bumper after it?
+-- Check if a file is a "valid" video to have bumpers inserted after
 local function is_valid_video_file(path)
     if not path or path == "" then return false end
     if is_bumper(path) then return false end
+
     local ext = path:match("%.([^.]+)$")
     if not ext then return false end
     ext = ext:lower()
-    local good = {
-      mp4=true, mkv=true, avi=true, mov=true, webm=true,
-      m4v=true, flv=true, wmv=true, mpg=true, mpeg=true,
+
+    local valid_exts = {
+        mp4=true, mkv=true, avi=true, mov=true, webm=true,
+        m4v=true, flv=true, wmv=true, mpg=true, mpeg=true,
     }
-    return good[ext] == true
+    return valid_exts[ext] == true
 end
 
--- Pick a random bumper (seed once)
+-- Pick a random bumper from the list
 math.randomseed(os.time())
 local function pick_random_bumper()
     if #insert_paths == 0 then return nil end
     return insert_paths[math.random(#insert_paths)]
 end
 
--- OSD helper
+-- Show OSD messages
 local function show_osd(msg)
     mp.osd_message(msg, 2)
 end
 
--- State
+----------------------------------------
+-- 3. STATE VARIABLES
+----------------------------------------
 local bumpers_inserted = false
 local bumpers_enabled  = true
 
--- Rebuild playlist exactly once, interleaving bumpers
+local config_dir = (os.getenv("XDG_CONFIG_HOME") or os.getenv("HOME") .. "/.config") .. "/mpv/script-opts/"
+local bumpers_settings_file = config_dir .. "bumpers-settings.conf"
+
+----------------------------------------
+-- 4. PLAYLIST REBUILDING
+----------------------------------------
 local function rebuild_playlist()
     if bumpers_inserted then return end
     bumpers_inserted = true
@@ -70,7 +98,6 @@ local function rebuild_playlist()
     local orig = mp.get_property_native("playlist")
     if not orig or #orig == 0 then return end
 
-    -- Build new playlist array
     local newlist = {}
     for _, entry in ipairs(orig) do
         table.insert(newlist, entry.filename)
@@ -82,18 +109,19 @@ local function rebuild_playlist()
         end
     end
 
-    -- Stop playback, clear, and re‑append everything
     mp.command("stop")
     mp.command("playlist-clear")
     for _, url in ipairs(newlist) do
         mp.commandv("loadfile", url, "append")
     end
 
-    -- Start playing at the very first item
     mp.command("playlist-play-index 0")
 end
 
--- Skip bumpers automatically at end of file
+----------------------------------------
+-- 5. BUMPER HANDLING
+----------------------------------------
+-- Skip bumpers automatically at the end of file
 local function on_end_file(event)
     if event.reason ~= "eof" and event.reason ~= 0 then return end
     local path = mp.get_property("path")
@@ -102,16 +130,13 @@ local function on_end_file(event)
     end
 end
 
--- Toggle bumpers on/off
+-- Toggle bumpers on/off (temporary)
 local function toggle_bumpers()
     bumpers_enabled = not bumpers_enabled
-    show_osd(bumpers_enabled and "Bumpers paused" or "Bumpers resumed")
+    show_osd(bumpers_enabled and "Bumpers resumed" or "Bumpers paused")
 end
 
-local config_dir = (os.getenv("XDG_CONFIG_HOME") or os.getenv("HOME") .. "/.config") .. "/mpv/script-opts/"
-local bumpers_settings_file = config_dir .. "bumpers-settings.conf"
-
--- Persistent bumpers enabled state (requires restart)
+-- Persistent enable/disable bumpers (requires restart)
 local function save_bumpers_enabled_state(state)
     local f = io.open(bumpers_settings_file, "w")
     if f then
@@ -127,22 +152,23 @@ local function load_bumpers_enabled_state()
         f:close()
         return val == "1"
     end
-    return true -- default: enabled
+    return true
 end
 
 bumpers_enabled = load_bumpers_enabled_state()
 
--- CTRL+B: persistently enable/disable bumpers (requires restart)
 local function toggle_bumpers_persistent()
     bumpers_enabled = not bumpers_enabled
     save_bumpers_enabled_state(bumpers_enabled)
-    show_osd((bumpers_enabled and "Bumpers enabled (restart required)") or "Bumpers disabled (restart required)")
+    show_osd((bumpers_enabled and "Bumpers enabled (restart required)") or
+             "Bumpers disabled (restart required)")
 end
 
--- SHIFT+B: cycle config files in config dir
+----------------------------------------
+-- 6. CONFIG FILE CYCLING
+----------------------------------------
 local config_files = {}
 local config_index = 1
-local utils = require("mp.utils")
 
 local function scan_config_files()
     config_files = {}
@@ -166,11 +192,11 @@ local function cycle_config_file()
     end
     config_index = config_index % #config_files + 1
     local selected = config_files[config_index]
-    -- Only copy if not already the main config
+
     if selected ~= "bumpers.conf" then
-        -- Copy selected config to bumpers.conf
         local src = config_dir .. selected
         local dst = config_dir .. "bumpers.conf"
+
         local infile = io.open(src, "r")
         if infile then
             local content = infile:read("*a")
@@ -191,17 +217,22 @@ local function cycle_config_file()
     end
 end
 
--- Hook: once we’ve loaded the very first file, rebuild the playlist
+----------------------------------------
+-- 8. EVENT HOOKS
+----------------------------------------
+-- Rebuild playlist once after first file starts
 mp.register_event("start-file", function()
-    -- give MPV a few ticks to populate `playlist`
     mp.add_timeout(0.05, rebuild_playlist)
 end)
 
--- Hook: skip bumpers if enabled
+-- Automatically skip bumpers at EOF if enabled
 mp.register_event("end-file", function(event)
-    if bumpers_enabled then on_end_file(event) end
+    if not bumpers_enabled then on_end_file(event) end
 end)
 
-mp.add_key_binding("b", "toggle_bumpers", toggle_bumpers)
-mp.add_key_binding("Ctrl+b", "toggle_bumpers_persistent", toggle_bumpers_persistent)
-mp.add_key_binding("Shift+b", "cycle_config_file", cycle_config_file)
+----------------------------------------
+-- 9. KEYBINDINGS
+----------------------------------------
+mp.add_key_binding("b",        "toggle_bumpers",          toggle_bumpers)
+mp.add_key_binding("Ctrl+b",   "toggle_bumpers_persistent", toggle_bumpers_persistent)
+mp.add_key_binding("Shift+b",  "cycle_config_file",       cycle_config_file)
