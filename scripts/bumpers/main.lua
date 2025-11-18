@@ -1,5 +1,5 @@
 --[[ 
-MPV Bumper Inserter (Playlist Rebuild Approach)
+MPV Bumper Inserter (Improved Dynamic Approach)
 
 Automatically interleaves "bumper" videos between valid videos in your playlist.
 Supports:
@@ -7,7 +7,7 @@ Supports:
     - Skip bumper automatically at EOF
     - Persistent bumper enable/disable
     - Config file cycling
-    - Chapter hooks
+    - Dynamic playlist insertion (no full rebuild)
 --]]
 
 local mp      = require("mp")
@@ -44,7 +44,8 @@ end
 local function is_bumper(path)
     if not path then return false end
     for _, name in ipairs(insert_paths) do
-        if path:sub(-#name) == name then
+        -- Check if path ends with the bumper name (handles both full URLs and filenames)
+        if path:sub(-#name) == name or path:find(name, 1, true) then
             return true
         end
     end
@@ -82,50 +83,103 @@ end
 ----------------------------------------
 -- 3. STATE VARIABLES
 ----------------------------------------
-local bumpers_inserted = false
-local bumpers_enabled  = true
+local bumpers_enabled = true
+local playlist_processed = false  -- Track if we've already processed the current playlist
 
-local config_dir = (os.getenv("XDG_CONFIG_HOME") or os.getenv("HOME") .. "/.config") .. "/mpv/script-opts/"
+local config_dir = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/mpv/script-opts/"
 local bumpers_settings_file = config_dir .. "bumpers-settings.conf"
 
 ----------------------------------------
--- 4. PLAYLIST REBUILDING
+-- 4. IMPROVED PLAYLIST REBUILDING
 ----------------------------------------
-local function rebuild_playlist()
-    if bumpers_inserted then return end
-    bumpers_inserted = true
 
-    local orig = mp.get_property_native("playlist")
-    if not orig or #orig == 0 then return end
-
-    local newlist = {}
-    for _, entry in ipairs(orig) do
-        table.insert(newlist, entry.filename)
+-- Rebuild playlist with bumpers inserted, preserving playback state
+local function rebuild_playlist_with_bumpers()
+    if not bumpers_enabled then return end
+    if playlist_processed then return end
+    if #insert_paths == 0 then return end
+    
+    local orig_playlist = mp.get_property_native("playlist")
+    if not orig_playlist or #orig_playlist == 0 then return end
+    
+    -- Check if playlist already has bumpers (avoid double-processing)
+    local has_bumpers = false
+    for _, entry in ipairs(orig_playlist) do
+        if is_bumper(entry.filename) then
+            has_bumpers = true
+            break
+        end
+    end
+    
+    if has_bumpers then
+        playlist_processed = true
+        return
+    end
+    
+    -- Save current playback state
+    local current_pos = mp.get_property_number("playlist-pos", 0)
+    local current_path = mp.get_property("path")
+    local was_playing = mp.get_property("pause") == "no"
+    local time_pos = mp.get_property_number("time-pos", 0)
+    
+    -- Build new playlist with bumpers
+    local new_playlist = {}
+    local new_current_pos = 0
+    
+    for i, entry in ipairs(orig_playlist) do
+        table.insert(new_playlist, entry.filename)
+        
+        -- Track the new position of the current file
+        if i - 1 == current_pos then
+            new_current_pos = #new_playlist - 1
+        end
+        
+        -- Insert bumper after valid video files
         if is_valid_video_file(entry.filename) then
-            local b = pick_random_bumper()
-            if b then
-                table.insert(newlist, opts.base_url .. b)
+            local bumper_name = pick_random_bumper()
+            if bumper_name then
+                local bumper_url = opts.base_url .. bumper_name
+                table.insert(new_playlist, bumper_url)
             end
         end
     end
-
+    
+    -- Rebuild the playlist
     mp.command("stop")
     mp.command("playlist-clear")
-    for _, url in ipairs(newlist) do
+    
+    for _, url in ipairs(new_playlist) do
         mp.commandv("loadfile", url, "append")
     end
-
-    mp.command("playlist-play-index 0")
+    
+    -- Restore playback position
+    mp.set_property("playlist-pos", new_current_pos)
+    
+    -- Restore playback state
+    if was_playing and current_path then
+        mp.add_timeout(0.1, function()
+            if time_pos > 0 then
+                mp.set_property("time-pos", time_pos)
+            end
+            mp.set_property("pause", "no")
+        end)
+    end
+    
+    playlist_processed = true
 end
 
 ----------------------------------------
 -- 5. BUMPER HANDLING
 ----------------------------------------
+
 -- Skip bumpers automatically at the end of file
 local function on_end_file(event)
+    -- Only process EOF events (reason 0 or "eof")
     if event.reason ~= "eof" and event.reason ~= 0 then return end
+    
     local path = mp.get_property("path")
     if is_bumper(path) then
+        -- Automatically skip to next item when bumper ends
         mp.command("playlist-next")
     end
 end
@@ -133,7 +187,7 @@ end
 -- Toggle bumpers on/off (temporary)
 local function toggle_bumpers()
     bumpers_enabled = not bumpers_enabled
-    show_osd(bumpers_enabled and "Bumpers resumed" or "Bumpers paused")
+    show_osd(bumpers_enabled and "Bumpers enabled" or "Bumpers paused")
 end
 
 -- Persistent enable/disable bumpers (requires restart)
@@ -218,20 +272,36 @@ local function cycle_config_file()
 end
 
 ----------------------------------------
--- 8. EVENT HOOKS
+-- 7. EVENT HOOKS
 ----------------------------------------
--- Rebuild playlist once after first file starts
-mp.register_event("start-file", function()
-    mp.add_timeout(0.05, rebuild_playlist)
+
+-- Process playlist when first file loads
+mp.register_event("file-loaded", function()
+    -- Use a small delay to ensure playlist is stable
+    mp.add_timeout(0.1, function()
+        rebuild_playlist_with_bumpers()
+    end)
 end)
 
--- Automatically skip bumpers at EOF if enabled
+-- Automatically skip bumpers at EOF
 mp.register_event("end-file", function(event)
-    if not bumpers_enabled then on_end_file(event) end
+    -- Only process EOF events (reason 0 or "eof")
+    if event.reason ~= "eof" and event.reason ~= 0 then return end
+    
+    local path = mp.get_property("path")
+    if path and is_bumper(path) and bumpers_enabled then
+        -- Automatically skip to next item when bumper ends
+        mp.command("playlist-next")
+    end
+end)
+
+-- Reset processed flag when playlist is cleared or significantly changed
+mp.register_event("playlist-reloaded", function()
+    playlist_processed = false
 end)
 
 ----------------------------------------
--- 9. KEYBINDINGS
+-- 8. KEYBINDINGS
 ----------------------------------------
 mp.add_key_binding("b",        "toggle_bumpers",          toggle_bumpers)
 mp.add_key_binding("Ctrl+b",   "toggle_bumpers_persistent", toggle_bumpers_persistent)
