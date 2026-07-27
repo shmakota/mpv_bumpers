@@ -30,7 +30,7 @@ It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly, and 
 
    **Note:** The script must be in a `bumpers/` subdirectory within `scripts/`.
 
-2. Create a config file at:
+2. Create a bumper source file at:
 
 ```bash
 ~/.config/mpv/script-opts/bumpers.conf
@@ -44,6 +44,19 @@ base_url=https://archive.org/download/AdultswimBumps/
 
 # Comma-separated list of bumper filenames
 bumper_list=bump1.mp4,bump2.mkv,bump3.webm
+```
+
+3. Create a behavior options file at:
+
+```bash
+~/.config/mpv/script-opts/bumpers_options.conf
+```
+
+### Example `bumpers_options.conf`:
+
+```ini
+# Master persistent enable/disable flag used by Ctrl+B
+enabled=yes
 
 # Avoid shifting the active playlist item by only inserting after it
 insert_after_current_only=yes
@@ -63,11 +76,14 @@ interval_bumper_jitter_minutes=2
 interval_bumper_min_duration_minutes=45
 ```
 
-**Configuration options:**
+**Bumper source options (`bumpers.conf`):**
 - `base_url` - Base URL or local directory path prepended to each bumper filename
   - Can be a remote URL (e.g., `https://archive.org/download/AdultswimBumps/`)
   - Can be a local path (e.g., `/path/to/bumpers/` or `file:///path/to/bumpers/`)
 - `bumper_list` - Comma-separated list of bumper filenames (no spaces around commas)
+
+**Behavior options (`bumpers_options.conf`):**
+- `enabled` - Defaults to `yes`. Ctrl+B updates this value for persistent enable/disable.
 - `insert_after_current_only` - Defaults to `yes`. Avoids shifting the active playlist item when mpv is already playing.
 - `prevent_bumper_resize` - Defaults to `yes`. Temporarily sets `auto-window-resize=no` and `keepaspect-window=no` while a bumper is playing, then restores your previous values.
 - `chapter_bumpers_enabled` - Defaults to `no`. When enabled, eligible chapter changes can trigger a bumper.
@@ -90,7 +106,7 @@ You can create multiple config files (e.g., `bumpers-as.conf`, `bumpers-bumpwort
 2. **Keybindings:**
    - **`b`** - Toggle bumpers on/off (temporary, works immediately)
      - Shows "Bumpers enabled" or "Bumpers paused" in OSD
-   - **`Ctrl+B`** - Toggle bumpers persistently (saves to settings file, requires restart)
+   - **`Ctrl+B`** - Toggle bumpers persistently by updating `enabled` in `bumpers_options.conf` (requires restart)
    - **`Shift+B`** - Cycle between different config files (requires restart)
 
 3. **Bumpers finish like normal playlist entries** - mpv advances to the next item at EOF.
@@ -125,6 +141,7 @@ The script uses an in-place playlist insertion approach that:
 - Check that `bumpers.conf` exists in `~/.config/mpv/script-opts/`
 - Verify `bumper_list` is not empty and filenames are correct
 - Ensure `base_url` is correct (trailing slash recommended for URLs)
+- Check behavior toggles in `bumpers_options.conf`
 - Check that the script file is at `~/.config/mpv/scripts/bumpers/main.lua`
 
 **Playlist not updating:**

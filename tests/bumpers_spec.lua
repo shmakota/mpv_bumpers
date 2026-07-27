@@ -58,9 +58,13 @@ end
 
 package.preload["mp.options"] = function()
     return {
-        read_options = function(opts)
-            opts.base_url = "https://example.test/bumpers"
-            opts.bumper_list = "bumper one.mp4, bumper-two.webm"
+        read_options = function(opts, name)
+            if name == "bumpers" then
+                opts.base_url = "https://example.test/bumpers"
+                opts.bumper_list = "bumper one.mp4, bumper-two.webm"
+            elseif name == "bumpers_options" then
+                opts.chapter_bumper_blacklist = "intro,op,opening,ed,ending,preview,recap,next"
+            end
         end,
     }
 end

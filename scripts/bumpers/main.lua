@@ -16,9 +16,13 @@ local utils   = require("mp.utils")
 ----------------------------------------
 -- 1. DEFAULT CONFIGURATION & OPTIONS
 ----------------------------------------
-local opts = {
+local bumper_source = {
     bumper_list = "",  -- CSV of bumper filenames, e.g. "b1.mp4,b2.mp4"
     base_url    = "https://archive.org/download/AdultswimBumps/",
+}
+
+local opts = {
+    enabled = true,
     insert_after_current_only = true,
     prevent_bumper_resize = true,
     chapter_bumpers_enabled = false,
@@ -30,8 +34,9 @@ local opts = {
     interval_bumper_min_duration_minutes = 45,
 }
 
--- Load options from 'bumpers.conf'
-options.read_options(opts, "bumpers")
+-- Load bumper source/catalog from 'bumpers.conf' and behavior from 'bumpers_options.conf'.
+options.read_options(bumper_source, "bumpers")
+options.read_options(opts, "bumpers_options")
 
 -- Parse bumper CSV into a Lua table
 local insert_paths = {}
@@ -46,7 +51,7 @@ local function parse_csv_list(value)
     return result
 end
 
-insert_paths = parse_csv_list(opts.bumper_list)
+insert_paths = parse_csv_list(bumper_source.bumper_list)
 local chapter_blacklist = parse_csv_list(opts.chapter_bumper_blacklist)
 
 ----------------------------------------
@@ -181,7 +186,7 @@ local function get_config_dir()
 end
 
 local config_dir = get_config_dir()
-local bumpers_settings_file = config_dir .. "bumpers-settings.conf"
+local bumpers_options_file = config_dir .. "bumpers_options.conf"
 
 local function save_window_options()
     return {
@@ -247,7 +252,7 @@ local function insert_bumpers_into_playlist()
             and not (next_entry and is_bumper(next_entry.filename)) then
             local bumper_name = pick_random_bumper()
             if bumper_name then
-                mp.commandv("loadfile", join_base_and_name(opts.base_url, bumper_name), "insert-at", i)
+                mp.commandv("loadfile", join_base_and_name(bumper_source.base_url, bumper_name), "insert-at", i)
             end
         end
     end
@@ -274,7 +279,7 @@ local function insert_interruption_bumper(path, resume_time)
     local resume_options = { start = tostring(resume_time) }
 
     chapter_interruption_state = "bumper"
-    mp.commandv("loadfile", join_base_and_name(opts.base_url, bumper_name), "insert-next")
+    mp.commandv("loadfile", join_base_and_name(bumper_source.base_url, bumper_name), "insert-next")
     mark_bumper_played()
     if mp.command_native then
         mp.command_native({"loadfile", path, "insert-at", current_pos + 2, resume_options})
@@ -368,21 +373,33 @@ end
 
 -- Persistent enable/disable bumpers (requires restart)
 local function save_bumpers_enabled_state(state)
-    local f = io.open(bumpers_settings_file, "w")
-    if f then
-        f:write(state and "1" or "0")
-        f:close()
+    local value = state and "yes" or "no"
+    local content = ""
+    local infile = io.open(bumpers_options_file, "r")
+    if infile then
+        content = infile:read("*a") or ""
+        infile:close()
+    end
+
+    local replacement = "enabled=" .. value
+    if content:match("[\r\n]?enabled%s*=") then
+        content = content:gsub("([^\r\n]*enabled%s*=%s*)[^\r\n]*", replacement, 1)
+    else
+        if content ~= "" and not content:match("[\r\n]$") then
+            content = content .. "\n"
+        end
+        content = content .. replacement .. "\n"
+    end
+
+    local outfile = io.open(bumpers_options_file, "w")
+    if outfile then
+        outfile:write(content)
+        outfile:close()
     end
 end
 
 local function load_bumpers_enabled_state()
-    local f = io.open(bumpers_settings_file, "r")
-    if f then
-        local val = f:read("*l")
-        f:close()
-        return val == "1"
-    end
-    return true
+    return opts.enabled
 end
 
 bumpers_enabled = load_bumpers_enabled_state()
@@ -405,7 +422,8 @@ local function scan_config_files()
     local files = utils.readdir(config_dir, "files")
     if files then
         for _, file in ipairs(files) do
-            if file:match("^bumpers.*%.conf$") and file ~= "bumpers-settings.conf" then
+            if file:match("^bumpers.*%.conf$")
+                and file ~= "bumpers_options.conf" then
                 table.insert(config_files, file)
             end
         end
