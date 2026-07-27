@@ -13,11 +13,10 @@ It also includes a **toggle key (`b`)** to pause/resume bumpers on the fly, and 
 
 - 🎲 **Random bumper selection** from a customizable list
 - 🔄 **Automatic insertion** of bumpers after each non-bumper playlist item
-- ⏭️ **Auto-skip bumpers** on EOF (no manual skipping needed)
 - ⌨️ **Toggle bumpers** with a keybind (`b`) - works instantly
 - 💾 **Persistent settings** - save your bumper preferences across sessions
 - 🔀 **Config file cycling** - easily switch between different bumper sets
-- 🎬 **Smart playlist handling** - preserves playback position when rebuilding
+- 🎬 **Smart playlist handling** - inserts bumpers without stopping or rebuilding the active playlist
 
 ---
 
@@ -45,6 +44,12 @@ base_url=https://archive.org/download/AdultswimBumps/
 
 # Comma-separated list of bumper filenames
 bumper_list=bump1.mp4,bump2.mkv,bump3.webm
+
+# Avoid shifting the active playlist item by only inserting after it
+insert_after_current_only=yes
+
+# Keep odd-resolution/old-aspect bumpers from resizing the mpv window
+prevent_bumper_resize=yes
 ```
 
 **Configuration options:**
@@ -52,6 +57,8 @@ bumper_list=bump1.mp4,bump2.mkv,bump3.webm
   - Can be a remote URL (e.g., `https://archive.org/download/AdultswimBumps/`)
   - Can be a local path (e.g., `/path/to/bumpers/` or `file:///path/to/bumpers/`)
 - `bumper_list` - Comma-separated list of bumper filenames (no spaces around commas)
+- `insert_after_current_only` - Defaults to `yes`. Avoids shifting the active playlist item when mpv is already playing.
+- `prevent_bumper_resize` - Defaults to `yes`. Temporarily sets `auto-window-resize=no` and `keepaspect-window=no` while a bumper is playing, then restores your previous values.
 
 **Multiple config files:**
 You can create multiple config files (e.g., `bumpers-as.conf`, `bumpers-bumpworthy.conf`) and cycle between them using `Shift+B`.
@@ -68,19 +75,18 @@ You can create multiple config files (e.g., `bumpers-as.conf`, `bumpers-bumpwort
    - **`Ctrl+B`** - Toggle bumpers persistently (saves to settings file, requires restart)
    - **`Shift+B`** - Cycle between different config files (requires restart)
 
-3. **Bumpers are automatically skipped** when they finish playing - no manual intervention needed.
+3. **Bumpers finish like normal playlist entries** - mpv advances to the next item at EOF.
 
 ---
 
 ## How It Works
 
-The script uses an improved playlist rebuilding approach that:
+The script uses an in-place playlist insertion approach that:
 
-1. **On playlist load:** When you start playing a playlist, the script rebuilds it once to insert bumpers after each valid video file.
-2. **Playback preservation:** The rebuild preserves your current playback position and pause/play state.
-3. **Smart detection:** The script detects if bumpers are already present to avoid double-processing.
-4. **Auto-skip:** When a bumper finishes playing, it automatically advances to the next video.
-5. **State management:** Tracks which items have been processed to prevent duplicate insertions.
+1. **On file load:** The script inspects the current playlist and inserts missing bumpers after valid video files.
+2. **Playback preservation:** The script uses in-place `loadfile ... insert-at` commands instead of `stop`, `playlist-clear`, and reload.
+3. **Smart detection:** If the next item is already a configured bumper, the script leaves that entry alone.
+4. **Normal EOF behavior:** Bumpers are ordinary playlist entries, so mpv advances naturally when they end.
 
 **Supported video formats:** mp4, mkv, avi, mov, webm, m4v, flv, wmv, mpg, mpeg
 
@@ -106,9 +112,21 @@ The script uses an improved playlist rebuilding approach that:
 - Check that bumpers are enabled (press `b` to toggle)
 - Verify your video files have supported extensions
 
-**Bumpers playing but not auto-skipping:**
-- Ensure bumpers are enabled (`b` key)
+**Bumpers playing but not advancing:**
+- Check that mpv is allowed to advance through the playlist normally
 - Check that bumper filenames in your config match the actual files
+
+---
+
+## Tests
+
+The repository includes a small Lua test harness at `tests/bumpers_spec.lua`. Run it from the repository root with:
+
+```bash
+lua tests/bumpers_spec.lua
+```
+
+The local machine used for this audit did not have `lua` or `luajit` on PATH, so the test file was added but could not be executed here.
 
 ---
 

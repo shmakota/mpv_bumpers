@@ -1,13 +1,12 @@
 --[[ 
-MPV Bumper Inserter (Improved Dynamic Approach)
+MPV Bumper Inserter
 
 Automatically interleaves "bumper" videos between valid videos in your playlist.
 Supports:
     - Random bumper selection
-    - Skip bumper automatically at EOF
     - Persistent bumper enable/disable
     - Config file cycling
-    - Dynamic playlist insertion (no full rebuild)
+    - In-place playlist insertion without interrupting playback
 --]]
 
 local mp      = require("mp")
@@ -20,6 +19,8 @@ local utils   = require("mp.utils")
 local opts = {
     bumper_list = "",  -- CSV of bumper filenames, e.g. "b1.mp4,b2.mp4"
     base_url    = "https://archive.org/download/AdultswimBumps/",
+    insert_after_current_only = true,
+    prevent_bumper_resize = true,
 }
 
 -- Load options from 'bumpers.conf'
@@ -27,14 +28,18 @@ options.read_options(opts, "bumpers")
 
 -- Parse bumper CSV into a Lua table
 local insert_paths = {}
-for name in opts.bumper_list:gmatch("([^,]+)") do
-    if name then
+local function parse_csv_list(value)
+    local result = {}
+    for name in tostring(value or ""):gmatch("([^,]+)") do
         name = name:match("^%s*(.-)%s*$") or ""
         if name ~= "" then
-            table.insert(insert_paths, name)
+            table.insert(result, name)
         end
     end
+    return result
 end
+
+insert_paths = parse_csv_list(opts.bumper_list)
 
 ----------------------------------------
 -- 2. HELPER FUNCTIONS
@@ -44,8 +49,7 @@ end
 local function is_bumper(path)
     if not path then return false end
     for _, name in ipairs(insert_paths) do
-        -- Check if path ends with the bumper name (handles both full URLs and filenames)
-        if path:sub(-#name) == name or path:find(name, 1, true) then
+        if path == name or path:sub(-#name) == name then
             return true
         end
     end
@@ -75,6 +79,14 @@ local function pick_random_bumper()
     return insert_paths[math.random(#insert_paths)]
 end
 
+local function join_base_and_name(base, name)
+    if not base or base == "" then return name end
+    if base:sub(-1) == "/" or base:sub(-1) == "\\" then
+        return base .. name
+    end
+    return base .. "/" .. name
+end
+
 -- Show OSD messages
 local function show_osd(msg)
     mp.osd_message(msg, 2)
@@ -84,104 +96,103 @@ end
 -- 3. STATE VARIABLES
 ----------------------------------------
 local bumpers_enabled = true
-local playlist_processed = false  -- Track if we've already processed the current playlist
+local processing_playlist = false
+local saved_window_options = nil
 
-local config_dir = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/mpv/script-opts/"
+local function ensure_trailing_separator(path)
+    if not path or path == "" then return path end
+    if path:sub(-1) == "/" or path:sub(-1) == "\\" then return path end
+    return path .. "/"
+end
+
+local function get_config_dir()
+    if mp.command_native then
+        local path = mp.command_native({"expand-path", "~~home/script-opts/"})
+        if path and path ~= "" then
+            return ensure_trailing_separator(path)
+        end
+    end
+
+    local xdg = os.getenv("XDG_CONFIG_HOME")
+    if xdg and xdg ~= "" then
+        return ensure_trailing_separator(xdg .. "/mpv/script-opts")
+    end
+
+    local appdata = os.getenv("APPDATA")
+    if appdata and appdata ~= "" then
+        return ensure_trailing_separator(appdata .. "/mpv/script-opts")
+    end
+
+    local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
+    return ensure_trailing_separator(home .. "/.config/mpv/script-opts")
+end
+
+local config_dir = get_config_dir()
 local bumpers_settings_file = config_dir .. "bumpers-settings.conf"
+
+local function save_window_options()
+    return {
+        auto_window_resize = mp.get_property("auto-window-resize"),
+        keepaspect_window = mp.get_property("keepaspect-window"),
+    }
+end
+
+local function apply_window_options(options_table)
+    if not options_table then return end
+    if options_table.auto_window_resize ~= nil then
+        mp.set_property("auto-window-resize", options_table.auto_window_resize)
+    end
+    if options_table.keepaspect_window ~= nil then
+        mp.set_property("keepaspect-window", options_table.keepaspect_window)
+    end
+end
+
+local function update_bumper_window_guard(path)
+    if not opts.prevent_bumper_resize then return end
+
+    if path and is_bumper(path) then
+        if not saved_window_options then
+            saved_window_options = save_window_options()
+        end
+        mp.set_property("auto-window-resize", "no")
+        mp.set_property("keepaspect-window", "no")
+    elseif saved_window_options then
+        apply_window_options(saved_window_options)
+        saved_window_options = nil
+    end
+end
 
 ----------------------------------------
 -- 4. IMPROVED PLAYLIST REBUILDING
 ----------------------------------------
 
--- Rebuild playlist with bumpers inserted, preserving playback state
-local function rebuild_playlist_with_bumpers()
+-- Insert bumpers in-place. Avoid stop/clear/reload because that interrupts the
+-- active file and can interfere with mpv watch-later/resume state.
+local function insert_bumpers_into_playlist()
     if not bumpers_enabled then return end
-    if playlist_processed then return end
+    if processing_playlist then return end
     if #insert_paths == 0 then return end
     
-    local orig_playlist = mp.get_property_native("playlist")
-    if not orig_playlist or #orig_playlist == 0 then return end
-    
-    -- Check if playlist already has bumpers (avoid double-processing)
-    local has_bumpers = false
-    for _, entry in ipairs(orig_playlist) do
-        if is_bumper(entry.filename) then
-            has_bumpers = true
-            break
-        end
-    end
-    
-    if has_bumpers then
-        playlist_processed = true
-        return
-    end
-    
-    -- Save current playback state
+    local playlist = mp.get_property_native("playlist")
+    if not playlist or #playlist == 0 then return end
+
     local current_pos = mp.get_property_number("playlist-pos", 0)
-    local current_path = mp.get_property("path")
-    local was_playing = mp.get_property("pause") == "no"
-    local time_pos = mp.get_property_number("time-pos", 0)
-    
-    -- Build new playlist with bumpers
-    local new_playlist = {}
-    local new_current_pos = 0
-    
-    for i, entry in ipairs(orig_playlist) do
-        table.insert(new_playlist, entry.filename)
-        
-        -- Track the new position of the current file
-        if i - 1 == current_pos then
-            new_current_pos = #new_playlist - 1
-        end
-        
-        -- Insert bumper after valid video files
-        if is_valid_video_file(entry.filename) then
+    local first_index = opts.insert_after_current_only and (current_pos + 1) or 1
+
+    processing_playlist = true
+    for i = #playlist, first_index, -1 do
+        local entry = playlist[i]
+        local next_entry = playlist[i + 1]
+        local filename = entry and entry.filename
+        if is_valid_video_file(filename)
+            and not (next_entry and is_bumper(next_entry.filename)) then
             local bumper_name = pick_random_bumper()
             if bumper_name then
-                local bumper_url = opts.base_url .. bumper_name
-                table.insert(new_playlist, bumper_url)
+                mp.commandv("loadfile", join_base_and_name(opts.base_url, bumper_name), "insert-at", i)
             end
         end
     end
-    
-    -- Rebuild the playlist
-    mp.command("stop")
-    mp.command("playlist-clear")
-    
-    for _, url in ipairs(new_playlist) do
-        mp.commandv("loadfile", url, "append")
-    end
-    
-    -- Restore playback position
-    mp.set_property("playlist-pos", new_current_pos)
-    
-    -- Restore playback state
-    if was_playing and current_path then
-        mp.add_timeout(0.1, function()
-            if time_pos > 0 then
-                mp.set_property("time-pos", time_pos)
-            end
-            mp.set_property("pause", "no")
-        end)
-    end
-    
-    playlist_processed = true
-end
-
-----------------------------------------
--- 5. BUMPER HANDLING
-----------------------------------------
-
--- Skip bumpers automatically at the end of file
-local function on_end_file(event)
-    -- Only process EOF events (reason 0 or "eof")
-    if event.reason ~= "eof" and event.reason ~= 0 then return end
-    
-    local path = mp.get_property("path")
-    if is_bumper(path) then
-        -- Automatically skip to next item when bumper ends
-        mp.command("playlist-next")
-    end
+    processing_playlist = false
 end
 
 -- Toggle bumpers on/off (temporary)
@@ -275,29 +286,20 @@ end
 -- 7. EVENT HOOKS
 ----------------------------------------
 
+mp.add_hook("on_load", 50, function()
+    update_bumper_window_guard(mp.get_property("stream-open-filename"))
+end)
+
 -- Process playlist when first file loads
 mp.register_event("file-loaded", function()
     -- Use a small delay to ensure playlist is stable
     mp.add_timeout(0.1, function()
-        rebuild_playlist_with_bumpers()
+        insert_bumpers_into_playlist()
     end)
 end)
 
--- Automatically skip bumpers at EOF
-mp.register_event("end-file", function(event)
-    -- Only process EOF events (reason 0 or "eof")
-    if event.reason ~= "eof" and event.reason ~= 0 then return end
-    
-    local path = mp.get_property("path")
-    if path and is_bumper(path) and bumpers_enabled then
-        -- Automatically skip to next item when bumper ends
-        mp.command("playlist-next")
-    end
-end)
-
--- Reset processed flag when playlist is cleared or significantly changed
-mp.register_event("playlist-reloaded", function()
-    playlist_processed = false
+mp.register_event("shutdown", function()
+    apply_window_options(saved_window_options)
 end)
 
 ----------------------------------------
@@ -306,3 +308,10 @@ end)
 mp.add_key_binding("b",        "toggle_bumpers",          toggle_bumpers)
 mp.add_key_binding("Ctrl+b",   "toggle_bumpers_persistent", toggle_bumpers_persistent)
 mp.add_key_binding("Shift+b",  "cycle_config_file",       cycle_config_file)
+
+return {
+    parse_csv_list = parse_csv_list,
+    is_bumper = is_bumper,
+    is_valid_video_file = is_valid_video_file,
+    join_base_and_name = join_base_and_name,
+}
