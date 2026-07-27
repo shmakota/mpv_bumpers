@@ -50,6 +50,17 @@ insert_after_current_only=yes
 
 # Keep odd-resolution/old-aspect bumpers from resizing the mpv window
 prevent_bumper_resize=yes
+
+# Optional: give eligible chapter boundaries a chance to play a bumper
+chapter_bumpers_enabled=no
+chapter_bumper_chance=25
+chapter_bumper_blacklist=intro,op,opening,ed,ending,preview,recap
+
+# Optional: interrupt long-form content roughly every 15 minutes
+interval_bumpers_enabled=no
+interval_bumper_minutes=15
+interval_bumper_jitter_minutes=2
+interval_bumper_min_duration_minutes=45
 ```
 
 **Configuration options:**
@@ -59,6 +70,13 @@ prevent_bumper_resize=yes
 - `bumper_list` - Comma-separated list of bumper filenames (no spaces around commas)
 - `insert_after_current_only` - Defaults to `yes`. Avoids shifting the active playlist item when mpv is already playing.
 - `prevent_bumper_resize` - Defaults to `yes`. Temporarily sets `auto-window-resize=no` and `keepaspect-window=no` while a bumper is playing, then restores your previous values.
+- `chapter_bumpers_enabled` - Defaults to `no`. When enabled, eligible chapter changes can trigger a bumper.
+- `chapter_bumper_chance` - Defaults to `25`, meaning a 25% chance per eligible chapter boundary. Use `100` for always and `0` for never.
+- `chapter_bumper_blacklist` - Comma-separated case-insensitive title fragments. Matching chapter titles will not trigger bumpers.
+- `interval_bumpers_enabled` - Defaults to `no`. When enabled, long-form videos can be interrupted by supplementary timed bumpers.
+- `interval_bumper_minutes` - Defaults to `15`. Base interval between timed bumper opportunities.
+- `interval_bumper_jitter_minutes` - Defaults to `2`. Adds random timing drift so bumpers land around, not exactly on, the interval.
+- `interval_bumper_min_duration_minutes` - Defaults to `45`. Files shorter than this are ignored by interval mode.
 
 **Multiple config files:**
 You can create multiple config files (e.g., `bumpers-as.conf`, `bumpers-bumpworthy.conf`) and cycle between them using `Shift+B`.
@@ -87,6 +105,8 @@ The script uses an in-place playlist insertion approach that:
 2. **Playback preservation:** The script uses in-place `loadfile ... insert-at` commands instead of `stop`, `playlist-clear`, and reload.
 3. **Smart detection:** If the next item is already a configured bumper, the script leaves that entry alone.
 4. **Normal EOF behavior:** Bumpers are ordinary playlist entries, so mpv advances naturally when they end.
+5. **Chapter bumpers:** If enabled, the script watches mpv's `chapter` property, skips blacklisted chapter names, rolls the configured chance, inserts a bumper next, then inserts a duplicate of the current file after it with a `start=<chapter time>` per-file option.
+6. **Interval bumpers:** If enabled for long-form content, the script schedules a timer, inserts a bumper when it fires, then resumes the current file with a `start=<current time>` per-file option. Any bumper from playlist, chapter, or interval mode resets this timer so timed bumpers do not pile up.
 
 **Supported video formats:** mp4, mkv, avi, mov, webm, m4v, flv, wmv, mpg, mpeg
 

@@ -21,6 +21,13 @@ local opts = {
     base_url    = "https://archive.org/download/AdultswimBumps/",
     insert_after_current_only = true,
     prevent_bumper_resize = true,
+    chapter_bumpers_enabled = false,
+    chapter_bumper_chance = 25,
+    chapter_bumper_blacklist = "intro,op,opening,ed,ending,preview,recap,next",
+    interval_bumpers_enabled = false,
+    interval_bumper_minutes = 15,
+    interval_bumper_jitter_minutes = 2,
+    interval_bumper_min_duration_minutes = 45,
 }
 
 -- Load options from 'bumpers.conf'
@@ -40,6 +47,7 @@ local function parse_csv_list(value)
 end
 
 insert_paths = parse_csv_list(opts.bumper_list)
+local chapter_blacklist = parse_csv_list(opts.chapter_bumper_blacklist)
 
 ----------------------------------------
 -- 2. HELPER FUNCTIONS
@@ -87,6 +95,47 @@ local function join_base_and_name(base, name)
     return base .. "/" .. name
 end
 
+local function clamp_percent(value)
+    value = tonumber(value) or 0
+    if value < 0 then return 0 end
+    if value > 100 then return 100 end
+    return value
+end
+
+local function chance_passes(percent)
+    return math.random(100) <= clamp_percent(percent)
+end
+
+local function chapter_title_is_blacklisted(title)
+    title = tostring(title or ""):lower()
+    if title == "" then return false end
+    for _, blocked in ipairs(chapter_blacklist) do
+        blocked = tostring(blocked or ""):lower()
+        if blocked ~= "" and title:find(blocked, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function minutes_to_seconds(minutes)
+    return math.max(0, (tonumber(minutes) or 0) * 60)
+end
+
+local last_bumper_time = nil
+
+local function get_interval_delay()
+    local base = minutes_to_seconds(opts.interval_bumper_minutes)
+    local jitter = minutes_to_seconds(opts.interval_bumper_jitter_minutes)
+    if jitter <= 0 then return base end
+
+    return math.max(1, base + math.random(-jitter, jitter))
+end
+
+local function mark_bumper_played()
+    last_bumper_time = os.time()
+end
+
 -- Show OSD messages
 local function show_osd(msg)
     mp.osd_message(msg, 2)
@@ -98,6 +147,10 @@ end
 local bumpers_enabled = true
 local processing_playlist = false
 local saved_window_options = nil
+local last_chapter_key = nil
+local chapter_interruption_state = nil
+local allow_interval_schedule_during_resume = false
+local interval_timer = nil
 
 local function ensure_trailing_separator(path)
     if not path or path == "" then return path end
@@ -151,6 +204,11 @@ local function update_bumper_window_guard(path)
     if not opts.prevent_bumper_resize then return end
 
     if path and is_bumper(path) then
+        mark_bumper_played()
+        if interval_timer and interval_timer.kill then
+            interval_timer:kill()
+        end
+        interval_timer = nil
         if not saved_window_options then
             saved_window_options = save_window_options()
         end
@@ -170,6 +228,7 @@ end
 -- active file and can interfere with mpv watch-later/resume state.
 local function insert_bumpers_into_playlist()
     if not bumpers_enabled then return end
+    if chapter_interruption_state and not allow_interval_schedule_during_resume then return end
     if processing_playlist then return end
     if #insert_paths == 0 then return end
     
@@ -193,6 +252,112 @@ local function insert_bumpers_into_playlist()
         end
     end
     processing_playlist = false
+end
+
+local function get_chapter_entry(chapter_index)
+    if chapter_index == nil or chapter_index < 0 then return nil end
+    local chapters = mp.get_property_native("chapter-list")
+    if not chapters then return nil end
+    return chapters[chapter_index + 1]
+end
+
+local function insert_interruption_bumper(path, resume_time)
+    local bumper_name = pick_random_bumper()
+    if not bumper_name then return false end
+
+    if interval_timer and interval_timer.kill then
+        interval_timer:kill()
+    end
+    interval_timer = nil
+
+    local current_pos = mp.get_property_number("playlist-pos", 0)
+    local resume_options = { start = tostring(resume_time) }
+
+    chapter_interruption_state = "bumper"
+    mp.commandv("loadfile", join_base_and_name(opts.base_url, bumper_name), "insert-next")
+    mark_bumper_played()
+    if mp.command_native then
+        mp.command_native({"loadfile", path, "insert-at", current_pos + 2, resume_options})
+    else
+        mp.commandv("loadfile", path, "insert-at", current_pos + 2, "start=" .. tostring(resume_time))
+    end
+    mp.command("playlist-next")
+    return true
+end
+
+local function maybe_insert_chapter_bumper(_, chapter_index)
+    if not opts.chapter_bumpers_enabled then return end
+    if not bumpers_enabled then return end
+    if chapter_interruption_state then return end
+    if #insert_paths == 0 then return end
+    if chapter_index == nil or chapter_index < 1 then return end
+
+    local path = mp.get_property("path")
+    if not is_valid_video_file(path) then return end
+
+    local chapter_entry = get_chapter_entry(chapter_index)
+    if not chapter_entry then return end
+
+    local chapter_title = chapter_entry.title or ""
+    if chapter_title_is_blacklisted(chapter_title) then return end
+
+    local chapter_time = tonumber(chapter_entry.time) or mp.get_property_number("time-pos", 0)
+    local chapter_key = tostring(path) .. "#" .. tostring(chapter_index) .. "@" .. tostring(chapter_time)
+    if chapter_key == last_chapter_key then return end
+    last_chapter_key = chapter_key
+
+    if not chance_passes(opts.chapter_bumper_chance) then return end
+
+    insert_interruption_bumper(path, chapter_time)
+end
+
+local function kill_interval_timer()
+    if interval_timer and interval_timer.kill then
+        interval_timer:kill()
+    end
+    interval_timer = nil
+end
+
+local function maybe_insert_interval_bumper()
+    interval_timer = nil
+
+    if not opts.interval_bumpers_enabled then return end
+    if not bumpers_enabled then return end
+    if chapter_interruption_state then return end
+    if #insert_paths == 0 then return end
+
+    local path = mp.get_property("path")
+    if not is_valid_video_file(path) then return end
+
+    local duration = mp.get_property_number("duration", 0)
+    if duration < minutes_to_seconds(opts.interval_bumper_min_duration_minutes) then return end
+
+    local resume_time = mp.get_property_number("time-pos", 0)
+    if resume_time <= 0 or resume_time >= duration then return end
+
+    insert_interruption_bumper(path, resume_time)
+end
+
+local function schedule_interval_bumper()
+    kill_interval_timer()
+
+    if not opts.interval_bumpers_enabled then return end
+    if not bumpers_enabled then return end
+    if chapter_interruption_state then return end
+
+    local path = mp.get_property("path")
+    if not is_valid_video_file(path) then return end
+
+    local duration = mp.get_property_number("duration", 0)
+    if duration < minutes_to_seconds(opts.interval_bumper_min_duration_minutes) then return end
+
+    local delay = get_interval_delay()
+    if last_bumper_time then
+        local elapsed = os.time() - last_bumper_time
+        delay = math.max(delay - elapsed, 1)
+    end
+
+    interval_timer = mp.add_timeout(delay, maybe_insert_interval_bumper)
 end
 
 -- Toggle bumpers on/off (temporary)
@@ -295,10 +460,29 @@ mp.register_event("file-loaded", function()
     -- Use a small delay to ensure playlist is stable
     mp.add_timeout(0.1, function()
         insert_bumpers_into_playlist()
+        schedule_interval_bumper()
+        if allow_interval_schedule_during_resume then
+            allow_interval_schedule_during_resume = false
+            chapter_interruption_state = nil
+        end
     end)
 end)
 
+mp.register_event("end-file", function()
+    kill_interval_timer()
+    if chapter_interruption_state == "bumper" then
+        chapter_interruption_state = "resume"
+        allow_interval_schedule_during_resume = true
+    elseif chapter_interruption_state == "resume" then
+        allow_interval_schedule_during_resume = false
+        chapter_interruption_state = nil
+    end
+end)
+
+mp.observe_property("chapter", "number", maybe_insert_chapter_bumper)
+
 mp.register_event("shutdown", function()
+    kill_interval_timer()
     apply_window_options(saved_window_options)
 end)
 
@@ -314,4 +498,7 @@ return {
     is_bumper = is_bumper,
     is_valid_video_file = is_valid_video_file,
     join_base_and_name = join_base_and_name,
+    chapter_title_is_blacklisted = chapter_title_is_blacklisted,
+    chance_passes = chance_passes,
+    minutes_to_seconds = minutes_to_seconds,
 }

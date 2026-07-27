@@ -3,6 +3,7 @@ local properties = {
     path = "episode 01.mkv",
     ["auto-window-resize"] = "yes",
     ["keepaspect-window"] = "yes",
+    ["stream-open-filename"] = "episode 01.mkv",
 }
 local playlist = {
     { filename = "episode 01.mkv" },
@@ -31,17 +32,27 @@ package.preload["mp"] = function()
             local args = {...}
             if args[1] == "loadfile" and args[3] == "insert-at" then
                 table.insert(playlist, args[4] + 1, { filename = args[2] })
+            elseif args[1] == "loadfile" and args[3] == "insert-next" then
+                table.insert(playlist, 2, { filename = args[2] })
             end
         end,
         command_native = function(args)
             if args[1] == "expand-path" then return "C:/mpv/script-opts/" end
+            if args[1] == "loadfile" and args[3] == "insert-at" then
+                table.insert(commands, args)
+                table.insert(playlist, args[4] + 1, { filename = args[2] })
+            end
             return nil
+        end,
+        command = function(value)
+            table.insert(commands, { value })
         end,
         add_timeout = function(_, fn) fn() end,
         osd_message = function() end,
         add_key_binding = function() end,
         add_hook = function(_, _, fn) fn() end,
         register_event = function(_, fn) fn({ reason = "eof" }) end,
+        observe_property = function() end,
     }
 end
 
@@ -68,6 +79,9 @@ assert(bumpers.join_base_and_name("https://example.test/root/", "b.mp4") == "htt
 assert(bumpers.is_valid_video_file("episode 01.mkv") == true)
 assert(bumpers.is_valid_video_file("notes.txt") == false)
 assert(bumpers.is_bumper("https://example.test/bumpers/bumper one.mp4") == true)
+assert(bumpers.chapter_title_is_blacklisted("Intro") == true)
+assert(bumpers.chapter_title_is_blacklisted("Opening Theme") == true)
+assert(bumpers.chapter_title_is_blacklisted("Part A") == false)
 
 assert(#commands == 2)
 assert(commands[1][1] == "loadfile")
